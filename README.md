@@ -2,6 +2,10 @@
 
 A decentralized, browser-to-browser file transfer app built with WebRTC, React, and Node.js. Files are transferred directly between peers - the server only coordinates the initial connection handshake and never sees any file data.
 
+## Live demo
+
+https://p2p-webshare.vercel.app
+
 ## How it works
 
 1. The sender drops a file and gets a unique share link
