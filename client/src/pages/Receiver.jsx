@@ -4,7 +4,7 @@ import socket from "../socket";
 
 export default function Receiver() {
   const { roomId } = useParams();
-  const [status, setStatus] = useState("connecting"); // connecting | waiting | receiving | verifying | done | error
+  const [status, setStatus] = useState("connecting"); // connecting, waiting ,receiving ,verifying , done, error
   const [fileInfo, setFileInfo] = useState(null);
   const [progress, setProgress] = useState(0);
   const [speed, setSpeed] = useState(0);
@@ -14,9 +14,7 @@ export default function Receiver() {
   const receivedSizeRef = useRef(0);
   const lastTimeRef = useRef(Date.now());
   const lastBytesRef = useRef(0);
-  // ✅ fileInfoRef mirrors state so the onmessage closure (created once
-  // inside ondatachannel) always has access to the latest metadata without
-  // needing to be recreated on every render.
+
   const fileInfoRef = useRef(null);
 
   useEffect(() => {
@@ -25,8 +23,7 @@ export default function Receiver() {
     socket.on("room-not-found", () => setStatus("error"));
 
     socket.on("offer", async ({ offer }) => {
-      // ✅ FIX 4: Move to "waiting" only after the offer arrives —
-      // this is the correct moment the connection handshake begins.
+    
       setStatus("waiting");
 
       const peer = new RTCPeerConnection({
@@ -40,15 +37,12 @@ export default function Receiver() {
         }
       };
 
-      // ✅ FIX 5: ondatachannel fires when the SENDER's createDataChannel
-      // call reaches the receiver after ICE completes. It fires correctly —
-      // the bug was entirely in Sender reading a null `file`.
+
       peer.ondatachannel = (e) => {
         const channel = e.channel;
         channel.binaryType = "arraybuffer";
 
-        // ✅ FIX 6: Use a local flag rather than closing over `fileInfo`
-        // state (which would be stale). The flag resets with the channel.
+    
         let metadataReceived = false;
 
         channel.onopen = () => {
@@ -62,7 +56,7 @@ export default function Receiver() {
         };
 
         channel.onmessage = (event) => {
-          // ── First message: JSON metadata ──────────────────────────────
+          //First message: JSON metadata 
           if (!metadataReceived) {
             try {
               const metadata = JSON.parse(event.data);
@@ -77,10 +71,7 @@ export default function Receiver() {
             return;
           }
 
-          // ── Sentinel string: transfer complete ────────────────────────
-          // ✅ FIX 7: Guard with typeof before comparing — WebRTC delivers
-          // binary chunks as ArrayBuffer, so a straight === comparison on
-          // binary data would throw a type error in strict mode.
+          //Sentinel string: transfer complete 
           if (typeof event.data === "string") {
             if (event.data === "__END__") {
               verifyAndDownload();
@@ -88,7 +79,7 @@ export default function Receiver() {
             return;
           }
 
-          // ── Binary chunk ──────────────────────────────────────────────
+          //Binary chunk
           chunksRef.current.push(event.data);
           receivedSizeRef.current += event.data.byteLength;
 
@@ -245,10 +236,6 @@ export default function Receiver() {
           </div>
         )}
 
-        {/* ✅ FIX 8: "waiting" status no longer gated on fileInfo.
-            fileInfo is null at this point — it only arrives with the first
-            data channel message. Decoupling the status indicator from
-            fileInfo means the receiver no longer shows a blank screen. */}
         {status === "waiting" && (
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />

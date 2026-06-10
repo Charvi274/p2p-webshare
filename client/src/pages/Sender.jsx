@@ -12,11 +12,7 @@ export default function Sender() {
   const roomIdRef = useRef(null);
   const peerRef = useRef(null);
   const encryptionKeyRef = useRef(null);
-  // ✅ FIX 1: Keep a ref that always mirrors the latest `file` state.
-  // The useEffect closure captures `file` at mount time (null), so
-  // channel.onopen → sendFile(channel) would call file.arrayBuffer()
-  // on null and crash silently. Reading fileRef.current instead always
-  // gets the live value regardless of when the closure was created.
+
   const fileRef = useRef(null);
   useEffect(() => {
     fileRef.current = file;
@@ -37,8 +33,6 @@ export default function Sender() {
       const channel = peer.createDataChannel("fileTransfer");
       channel.binaryType = "arraybuffer";
 
-      // ✅ FIX 2: Pass fileRef.current into sendFile explicitly at the
-      // moment onopen fires, instead of relying on the stale closure.
       channel.onopen = () => {
         const currentFile = fileRef.current;
         if (!currentFile) {
@@ -104,15 +98,12 @@ export default function Sender() {
     };
   }, []);
 
-  // ✅ FIX 3: Accept `activeFile` as a parameter so this function never
-  // touches the React state variable (which would be stale in the closure).
   const sendFile = async (channel, activeFile) => {
   setStatus("transferring");
 
   const arrayBuffer = await activeFile.arrayBuffer();
 
   // Encrypt the entire buffer with AES-GCM
-  // IV (initialization vector) is 12 random bytes — safe to send in plaintext
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encryptedBuffer = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
@@ -128,7 +119,7 @@ export default function Sender() {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-  // Send metadata — iv is sent as a regular array so JSON can carry it
+  // Send metadata - iv is sent as a regular array so JSON can carry it
   channel.send(
     JSON.stringify({
       name: activeFile.name,
@@ -209,7 +200,7 @@ export default function Sender() {
   // Store key in ref so sendFile can use it later
   encryptionKeyRef.current = key;
 
-  // Key goes in the hash fragment — never sent to the server
+  // Key goes in the hash fragment - never sent to the server
   setShareLink(`${window.location.origin}/room/${id}#key=${keyBase64}`);
   setStatus("waiting");
   socket.emit("create-room", id);
@@ -237,7 +228,7 @@ export default function Sender() {
         </p>
       </div>
 
-      {/* ── Drop Zone (pre-share) ── */}
+      {/*Drop Zone (pre-share)*/}
       {!shareLink && (
         <>
           <div
@@ -285,7 +276,7 @@ export default function Sender() {
         </>
       )}
 
-      {/* ── Share / Transfer Panel ── */}
+      {/*Share / Transfer Panel*/}
       {shareLink && (
         <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl p-6">
           <p className="text-gray-400 text-sm mb-1">Sharing</p>
