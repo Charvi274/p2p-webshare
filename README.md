@@ -4,7 +4,7 @@ A decentralized, browser-to-browser file transfer app built with WebRTC, React, 
 
 ## Live demo
 
-https://p2p-webshare.vercel.app
+https://p2p-webshare-green.vercel.app/
 
 ## How it works
 
