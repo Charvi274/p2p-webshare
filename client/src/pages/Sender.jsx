@@ -8,6 +8,7 @@ export default function Sender() {
   const [status, setStatus] = useState("idle"); // idle | waiting | connected | transferring | done
   const [progress, setProgress] = useState(0);
   const [speed, setSpeed] = useState(0);
+  const [socketConnected, setSocketConnected] = useState(socket.connected);
   const fileInputRef = useRef(null);
   const roomIdRef = useRef(null);
   const peerRef = useRef(null);
@@ -97,6 +98,33 @@ export default function Sender() {
       socket.off("peer-disconnected");
     };
   }, []);
+
+  useEffect(() => {
+    // Wake up the signaling server early if it is sleeping on Render free tier
+    fetch("https://p2p-webshare-s21x.onrender.com/").catch(() => {});
+
+    setSocketConnected(socket.connected);
+
+    function onConnect() {
+      setSocketConnected(true);
+      if (status === "waiting" && roomIdRef.current) {
+        console.log("Re-creating room on reconnect:", roomIdRef.current);
+        socket.emit("create-room", roomIdRef.current);
+      }
+    }
+
+    function onDisconnect() {
+      setSocketConnected(false);
+    }
+
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+    };
+  }, [status]);
 
   const sendFile = async (channel, activeFile) => {
   setStatus("transferring");
@@ -219,7 +247,7 @@ export default function Sender() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center px-4">
-      <div className="mb-10 text-center">
+      <div className="mb-8 text-center">
         <h1 className="text-4xl font-bold text-violet-400 tracking-tight">
           P2P WebShare
         </h1>
@@ -227,6 +255,24 @@ export default function Sender() {
           Direct browser-to-browser file transfer. No server storage.
         </p>
       </div>
+
+      {/* Signaling server status message */}
+      {!socketConnected && (
+        <div className="mb-6 w-full max-w-md bg-yellow-950/40 border border-yellow-800/50 rounded-xl p-3 text-center animate-pulse">
+          <p className="text-yellow-400 text-xs flex items-center justify-center gap-2">
+            <span className="w-2.5 h-2.5 bg-yellow-400 rounded-full animate-ping" />
+            Connecting to signaling server... (This may take up to 50 seconds on cold start)
+          </p>
+        </div>
+      )}
+      {socketConnected && !shareLink && (
+        <div className="mb-6 w-full max-w-md bg-green-950/20 border border-green-900/30 rounded-xl p-2 text-center">
+          <p className="text-green-400 text-xs flex items-center justify-center gap-2">
+            <span className="w-1.5 h-1.5 bg-green-500 rounded-full" />
+            Connected to signaling server
+          </p>
+        </div>
+      )}
 
       {/*Drop Zone (pre-share)*/}
       {!shareLink && (
@@ -267,10 +313,15 @@ export default function Sender() {
 
           {file && (
             <button
-              className="mt-6 px-8 py-3 bg-violet-600 hover:bg-violet-500 text-white font-semibold rounded-xl transition-all"
+              disabled={!socketConnected}
+              className={`mt-6 px-8 py-3 font-semibold rounded-xl transition-all ${
+                socketConnected
+                  ? "bg-violet-600 hover:bg-violet-500 text-white cursor-pointer"
+                  : "bg-gray-800 text-gray-500 cursor-not-allowed"
+              }`}
               onClick={generateRoom}
             >
-              Generate Share Link
+              {socketConnected ? "Generate Share Link" : "Waiting for Server Connection..."}
             </button>
           )}
         </>

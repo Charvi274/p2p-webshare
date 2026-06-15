@@ -8,6 +8,7 @@ export default function Receiver() {
   const [fileInfo, setFileInfo] = useState(null);
   const [progress, setProgress] = useState(0);
   const [speed, setSpeed] = useState(0);
+  const [socketConnected, setSocketConnected] = useState(socket.connected);
 
   const peerRef = useRef(null);
   const chunksRef = useRef([]);
@@ -18,6 +19,25 @@ export default function Receiver() {
   const fileInfoRef = useRef(null);
 
   useEffect(() => {
+    // Wake up the signaling server early if it is sleeping on Render free tier
+    fetch("https://p2p-webshare-s21x.onrender.com/").catch(() => {});
+
+    setSocketConnected(socket.connected);
+
+    function onConnect() {
+      setSocketConnected(true);
+      console.log("Receiver socket connected. Joining room:", roomId);
+      socket.emit("join-room", roomId);
+    }
+
+    function onDisconnect() {
+      setSocketConnected(false);
+    }
+
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+
+    // Initial emit
     socket.emit("join-room", roomId);
 
     socket.on("room-not-found", () => setStatus("error"));
@@ -131,6 +151,8 @@ export default function Receiver() {
     });
 
     return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
       socket.off("room-not-found");
       socket.off("offer");
       socket.off("ice-candidate");
@@ -229,16 +251,23 @@ export default function Receiver() {
       <div className="w-full max-w-md bg-gray-900 border border-gray-700 rounded-2xl p-6">
 
         {/* Connecting to signaling server */}
-        {status === "connecting" && (
+        {!socketConnected && (
+          <div className="flex items-center gap-2 animate-pulse">
+            <div className="w-2 h-2 rounded-full bg-yellow-400 animate-ping" />
+            <p className="text-yellow-400 text-sm">Waking up signaling server... (This may take up to 50 seconds)</p>
+          </div>
+        )}
+
+        {socketConnected && status === "connecting" && (
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+            <div className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-pulse" />
             <p className="text-yellow-400 text-sm">Connecting to room…</p>
           </div>
         )}
 
-        {status === "waiting" && (
+        {socketConnected && status === "waiting" && (
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+            <div className="w-2.5 h-2.5 rounded-full bg-yellow-400 animate-pulse" />
             <p className="text-yellow-400 text-sm">Establishing connection…</p>
           </div>
         )}
