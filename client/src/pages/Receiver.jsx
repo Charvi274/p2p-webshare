@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import socket from "../socket";
 
@@ -13,17 +13,87 @@ export default function Receiver() {
   const peerRef = useRef(null);
   const chunksRef = useRef([]);
   const receivedSizeRef = useRef(0);
-  const lastTimeRef = useRef(Date.now());
+  const lastTimeRef = useRef(null);
   const lastBytesRef = useRef(0);
 
   const fileInfoRef = useRef(null);
   const iceCandidatesQueue = useRef([]);
 
+  const verifyAndDownload = useCallback(async () => {
+    setStatus("verifying");
+    setSpeed(0);
+
+    // Extract key from URL hash: /room/abc#key=<base64>
+    const hash = window.location.hash;
+    const keyBase64 = hash.startsWith("#key=") ? hash.slice(5) : null;
+
+    if (!keyBase64) {
+      console.error("No decryption key found in URL hash");
+      setStatus("error");
+      return;
+    }
+
+    // Decode base64 key and import it as AES-GCM
+    const rawKey = Uint8Array.from(atob(keyBase64), (c) => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey(
+      "raw",
+      rawKey,
+      { name: "AES-GCM" },
+      false, // not extractable on receiver side
+      ["decrypt"]
+    );
+
+    // Reassemble all encrypted chunks into one ArrayBuffer
+    const encryptedBlob = new Blob(chunksRef.current);
+    const encryptedBuffer = await encryptedBlob.arrayBuffer();
+
+    // IV was sent in metadata as a plain number array
+    const iv = new Uint8Array(fileInfoRef.current.iv);
+
+    let decryptedBuffer;
+    try {
+      decryptedBuffer = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        encryptedBuffer
+      );
+    } catch (e) {
+      console.error("Decryption failed — wrong key or corrupted data:", e);
+      setStatus("error");
+      return;
+    }
+
+    // SHA-256 is verified against the DECRYPTED (original) file
+    const hashBuffer = await crypto.subtle.digest("SHA-256", decryptedBuffer);
+    const hashHex = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    if (hashHex !== fileInfoRef.current.hash) {
+      console.error("Hash mismatch — file corrupted in transit");
+      setStatus("error");
+      return;
+    }
+
+    const downloadBlob = new Blob([decryptedBuffer], {
+      type: fileInfoRef.current.type,
+    });
+    const url = URL.createObjectURL(downloadBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileInfoRef.current.name;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    setStatus("done");
+    setProgress(100);
+  }, []);
+
   useEffect(() => {
     // Wake up the signaling server early if it is sleeping on Render free tier
-    fetch("https://p2p-webshare-s21x.onrender.com/").catch(() => {});
-
-    setSocketConnected(socket.connected);
+    const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    const wakeupUrl = isLocal ? "http://localhost:3001/" : "https://p2p-webshare-s21x.onrender.com/";
+    fetch(wakeupUrl).catch(() => {});
 
     function onConnect() {
       setSocketConnected(true);
@@ -39,13 +109,19 @@ export default function Receiver() {
     socket.on("disconnect", onDisconnect);
 
     // Initial emit
-    socket.emit("join-room", roomId);
+    if (socket.connected) {
+      socket.emit("join-room", roomId);
+    }
 
     socket.on("room-not-found", () => setStatus("error"));
 
     socket.on("offer", async ({ offer }) => {
     
       setStatus("waiting");
+      chunksRef.current = [];
+      receivedSizeRef.current = 0;
+      lastBytesRef.current = 0;
+      lastTimeRef.current = null;
 
       const peer = new RTCPeerConnection({
         iceServers: [
@@ -130,6 +206,9 @@ export default function Receiver() {
 
           // Speed (sampled every 500 ms)
           const now = Date.now();
+          if (lastTimeRef.current === null) {
+            lastTimeRef.current = now;
+          }
           const elapsed = (now - lastTimeRef.current) / 1000;
           if (elapsed >= 0.5) {
             const delta = receivedSizeRef.current - lastBytesRef.current;
@@ -198,77 +277,7 @@ export default function Receiver() {
       socket.off("ice-candidate");
       socket.off("peer-disconnected");
     };
-  }, [roomId]);
-
-  const verifyAndDownload = async () => {
-  setStatus("verifying");
-  setSpeed(0);
-
-  // Extract key from URL hash: /room/abc#key=<base64>
-  const hash = window.location.hash;
-  const keyBase64 = hash.startsWith("#key=") ? hash.slice(5) : null;
-
-  if (!keyBase64) {
-    console.error("No decryption key found in URL hash");
-    setStatus("error");
-    return;
-  }
-
-  // Decode base64 key and import it as AES-GCM
-  const rawKey = Uint8Array.from(atob(keyBase64), (c) => c.charCodeAt(0));
-  const key = await crypto.subtle.importKey(
-    "raw",
-    rawKey,
-    { name: "AES-GCM" },
-    false, // not extractable on receiver side
-    ["decrypt"]
-  );
-
-  // Reassemble all encrypted chunks into one ArrayBuffer
-  const encryptedBlob = new Blob(chunksRef.current);
-  const encryptedBuffer = await encryptedBlob.arrayBuffer();
-
-  // IV was sent in metadata as a plain number array
-  const iv = new Uint8Array(fileInfoRef.current.iv);
-
-  let decryptedBuffer;
-  try {
-    decryptedBuffer = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
-      key,
-      encryptedBuffer
-    );
-  } catch (e) {
-    console.error("Decryption failed — wrong key or corrupted data:", e);
-    setStatus("error");
-    return;
-  }
-
-  // SHA-256 is verified against the DECRYPTED (original) file
-  const hashBuffer = await crypto.subtle.digest("SHA-256", decryptedBuffer);
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  if (hashHex !== fileInfoRef.current.hash) {
-    console.error("Hash mismatch — file corrupted in transit");
-    setStatus("error");
-    return;
-  }
-
-  const downloadBlob = new Blob([decryptedBuffer], {
-    type: fileInfoRef.current.type,
-  });
-  const url = URL.createObjectURL(downloadBlob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = fileInfoRef.current.name;
-  a.click();
-  URL.revokeObjectURL(url);
-
-  setStatus("done");
-  setProgress(100);
-};
+  }, [roomId, verifyAndDownload]);
 
   const formatSize = (bytes) => {
     if (!bytes) return "";

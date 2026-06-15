@@ -1,5 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import socket from "../socket";
+
+const CHUNK_SIZE = 64 * 1024; // 64 KB
 
 export default function Sender() {
   const [file, setFile] = useState(null);
@@ -20,7 +22,74 @@ export default function Sender() {
     fileRef.current = file;
   }, [file]);
 
-  const CHUNK_SIZE = 64 * 1024; // 64 KB
+  const sendFile = useCallback(async (channel, activeFile) => {
+    setStatus("transferring");
+
+    const arrayBuffer = await activeFile.arrayBuffer();
+
+    // Encrypt the entire buffer with AES-GCM
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encryptedBuffer = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      encryptionKeyRef.current,
+      arrayBuffer
+    );
+
+    // SHA-256 is computed on the ENCRYPTED buffer
+    // Receiver decrypts first, then verifies the original file hash
+    // So we hash the original plaintext here
+    const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
+    const hashHex = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    // Send metadata - iv is sent as a regular array so JSON can carry it
+    channel.send(
+      JSON.stringify({
+        name: activeFile.name,
+        size: activeFile.size,
+        type: activeFile.type,
+        hash: hashHex,
+        iv: Array.from(iv), // 12 bytes, not secret
+      })
+    );
+
+    // Stream the ENCRYPTED buffer in chunks
+    let offset = 0;
+    let bytesSentWindow = 0;
+    let lastTime = Date.now();
+
+    const sendChunk = () => {
+      while (offset < encryptedBuffer.byteLength) {
+        if (channel.bufferedAmount > 1024 * 1024) {
+          setTimeout(sendChunk, 50);
+          return;
+        }
+
+        const chunk = encryptedBuffer.slice(offset, offset + CHUNK_SIZE);
+        channel.send(chunk);
+        offset += chunk.byteLength;
+        bytesSentWindow += chunk.byteLength;
+
+        const now = Date.now();
+        const elapsed = (now - lastTime) / 1000;
+        if (elapsed >= 0.5) {
+          setSpeed((bytesSentWindow / elapsed / (1024 * 1024)).toFixed(2));
+          bytesSentWindow = 0;
+          lastTime = now;
+        }
+
+        setProgress(Math.round((offset / encryptedBuffer.byteLength) * 100));
+      }
+
+      channel.send("__END__");
+      setStatus("done");
+      setSpeed(0);
+      setProgress(100);
+    };
+
+    sendChunk();
+  }, []);
 
   useEffect(() => {
     // Receiver joined — initiate WebRTC offer
@@ -137,13 +206,13 @@ export default function Sender() {
       socket.off("ice-candidate");
       socket.off("peer-disconnected");
     };
-  }, []);
+  }, [sendFile]);
 
   useEffect(() => {
     // Wake up the signaling server early if it is sleeping on Render free tier
-    fetch("https://p2p-webshare-s21x.onrender.com/").catch(() => {});
-
-    setSocketConnected(socket.connected);
+    const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+    const wakeupUrl = isLocal ? "http://localhost:3001/" : "https://p2p-webshare-s21x.onrender.com/";
+    fetch(wakeupUrl).catch(() => {});
 
     function onConnect() {
       setSocketConnected(true);
@@ -166,74 +235,7 @@ export default function Sender() {
     };
   }, [status]);
 
-  const sendFile = async (channel, activeFile) => {
-  setStatus("transferring");
 
-  const arrayBuffer = await activeFile.arrayBuffer();
-
-  // Encrypt the entire buffer with AES-GCM
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encryptedBuffer = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    encryptionKeyRef.current,
-    arrayBuffer
-  );
-
-  // SHA-256 is computed on the ENCRYPTED buffer
-  // Receiver decrypts first, then verifies the original file hash
-  // So we hash the original plaintext here
-  const hashBuffer = await crypto.subtle.digest("SHA-256", arrayBuffer);
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  // Send metadata - iv is sent as a regular array so JSON can carry it
-  channel.send(
-    JSON.stringify({
-      name: activeFile.name,
-      size: activeFile.size,
-      type: activeFile.type,
-      hash: hashHex,
-      iv: Array.from(iv), // 12 bytes, not secret
-    })
-  );
-
-  // Stream the ENCRYPTED buffer in chunks
-  let offset = 0;
-  let bytesSentWindow = 0;
-  let lastTime = Date.now();
-
-  const sendChunk = () => {
-    while (offset < encryptedBuffer.byteLength) {
-      if (channel.bufferedAmount > 1024 * 1024) {
-        setTimeout(sendChunk, 50);
-        return;
-      }
-
-      const chunk = encryptedBuffer.slice(offset, offset + CHUNK_SIZE);
-      channel.send(chunk);
-      offset += chunk.byteLength;
-      bytesSentWindow += chunk.byteLength;
-
-      const now = Date.now();
-      const elapsed = (now - lastTime) / 1000;
-      if (elapsed >= 0.5) {
-        setSpeed((bytesSentWindow / elapsed / (1024 * 1024)).toFixed(2));
-        bytesSentWindow = 0;
-        lastTime = now;
-      }
-
-      setProgress(Math.round((offset / encryptedBuffer.byteLength) * 100));
-    }
-
-    channel.send("__END__");
-    setStatus("done");
-    setSpeed(0);
-    setProgress(100);
-  };
-
-  sendChunk();
-};
 
   const handleFile = (selectedFile) => {
     if (!selectedFile) return;
