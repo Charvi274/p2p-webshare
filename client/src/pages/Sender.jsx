@@ -13,6 +13,7 @@ export default function Sender() {
   const roomIdRef = useRef(null);
   const peerRef = useRef(null);
   const encryptionKeyRef = useRef(null);
+  const iceCandidatesQueue = useRef([]);
 
   const fileRef = useRef(null);
   useEffect(() => {
@@ -27,9 +28,17 @@ export default function Sender() {
       setStatus("connected");
 
       const peer = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+          { urls: "stun:stun.services.mozilla.com" }
+        ],
       });
       peerRef.current = peer;
+
+      // Clear any previous queued candidates
+      iceCandidatesQueue.current = [];
 
       const channel = peer.createDataChannel("fileTransfer");
       channel.binaryType = "arraybuffer";
@@ -74,12 +83,27 @@ export default function Sender() {
     });
 
     socket.on("answer", async ({ answer }) => {
-      await peerRef.current?.setRemoteDescription(answer);
+      if (!peerRef.current) return;
+      await peerRef.current.setRemoteDescription(answer);
+
+      // Process queued candidates
+      while (iceCandidatesQueue.current.length > 0) {
+        const qc = iceCandidatesQueue.current.shift();
+        try {
+          await peerRef.current.addIceCandidate(qc);
+        } catch (e) {
+          console.warn("Error adding queued ICE candidate:", e);
+        }
+      }
     });
 
     socket.on("ice-candidate", async ({ candidate }) => {
       try {
-        await peerRef.current?.addIceCandidate(candidate);
+        if (peerRef.current && peerRef.current.remoteDescription) {
+          await peerRef.current.addIceCandidate(candidate);
+        } else {
+          iceCandidatesQueue.current.push(candidate);
+        }
       } catch (e) {
         console.warn("ICE candidate error (usually harmless):", e);
       }

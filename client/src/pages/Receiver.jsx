@@ -17,6 +17,7 @@ export default function Receiver() {
   const lastBytesRef = useRef(0);
 
   const fileInfoRef = useRef(null);
+  const iceCandidatesQueue = useRef([]);
 
   useEffect(() => {
     // Wake up the signaling server early if it is sleeping on Render free tier
@@ -47,9 +48,17 @@ export default function Receiver() {
       setStatus("waiting");
 
       const peer = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+          { urls: "stun:stun.services.mozilla.com" }
+        ],
       });
       peerRef.current = peer;
+
+      // Clear any previous queued candidates
+      iceCandidatesQueue.current = [];
 
       peer.onicecandidate = (e) => {
         if (e.candidate) {
@@ -133,6 +142,17 @@ export default function Receiver() {
       };
 
       await peer.setRemoteDescription(offer);
+
+      // Process queued candidates
+      while (iceCandidatesQueue.current.length > 0) {
+        const qc = iceCandidatesQueue.current.shift();
+        try {
+          await peer.addIceCandidate(qc);
+        } catch (e) {
+          console.warn("Error adding queued ICE candidate:", e);
+        }
+      }
+
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
       socket.emit("answer", { roomId, answer });
@@ -140,7 +160,11 @@ export default function Receiver() {
 
     socket.on("ice-candidate", async ({ candidate }) => {
       try {
-        await peerRef.current?.addIceCandidate(candidate);
+        if (peerRef.current && peerRef.current.remoteDescription) {
+          await peerRef.current.addIceCandidate(candidate);
+        } else {
+          iceCandidatesQueue.current.push(candidate);
+        }
       } catch (e) {
         console.warn("ICE candidate error (usually harmless):", e);
       }
